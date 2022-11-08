@@ -1,43 +1,70 @@
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind};
+use std::fs::File;
+use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
+
+use tempfile;
+
+extern crate pretty_env_logger;
+#[macro_use]
+extern crate log;
+
+static VERSION: &str = env!("CARGO_PKG_VERSION");
+static PKG_NAME: &str = env!("CARGO_PKG_NAME");
+
+static SEGMENT_TMP_IDX: usize = 0;
+static SEGMENT_SIZE_MAX: usize = 50;
 
 #[derive(Debug)]
 struct DB {
-    pub data: String,
-    hash_index: HashMap<String, usize>, // TODO should index contain length?
+    pub data: File,
+    segment_index: Vec<HashMap<String, u64>>,
 }
 
 impl DB {
-    pub fn set(&mut self, key: String, value: String) {
-        let s = format!("{},{}\n", key, value);
-        self.data.push_str(s.as_str());
+    pub fn init() -> DB {
+        let mut segment_index = Vec::new();
+        segment_index[SEGMENT_TMP_IDX] = HashMap::new();
 
-        // get index of s
-        let index = self.data.len() - s.len();
-        self.hash_index.insert(key, index);
+        // todo load segments from disk
+
+        let mut tmp_segment =
+            tempfile::tempfile().expect("unable to create temporary segment file");
+
+        DB {
+            data: tmp_segment,
+            segment_index: segment_index,
+        }
+    }
+    pub fn set(&mut self, key: String, value: String) {
+        let idx = self.data.metadata().unwrap().len();
+        writeln!(self.data, "{value}");
+
+        self.segment_index[SEGMENT_TMP_IDX].insert(key, idx);
     }
 
-    // look inside the hashmap, get the byte offset & return the value
     pub fn get(&mut self, key: String) -> Result<String, Error> {
-        match self.hash_index.get(&key) {
+        // todo check in all segments
+
+        match self.segment_index[SEGMENT_TMP_IDX].get(&key) {
             Some(index) => {
-                return Ok(self.parse_value_at(&index));
+                self.data.seek(SeekFrom::Start(*index)).unwrap();
+
+                let mut buf = String::new();
+
+                self.data.read_to_string(&mut buf).unwrap();
+                return Ok(buf.lines().take(1).collect());
             }
             None => Err(Error::new(ErrorKind::NotFound, "key not found")),
         }
     }
+}
 
-    fn parse_value_at(&self, index: &usize) -> String {
-        let mut end: usize = index + 1;
+fn main() {
+    pretty_env_logger::formatted_builder()
+        .filter_level(log::LevelFilter::Debug)
+        .init();
 
-        // decimal 10 == \n
-        while end < self.data.len() && self.data.as_bytes()[end] != 10 {
-            end += 1;
-        }
-
-        let pairs = self.data[*index..end].to_string();
-        pairs.split(",").collect::<Vec<&str>>()[1].to_string()
-    }
+    info!("running '{}' with version '{}'", PKG_NAME, VERSION);
 }
 
 #[cfg(test)]
@@ -46,9 +73,12 @@ mod tests {
 
     #[test]
     fn test_gets_one() {
+        let mut tmp_segment =
+            tempfile::tempfile().expect("unable to create temporary segment file");
+
         let mut db = DB {
-            data: String::new(),
-            hash_index: HashMap::new(),
+            data: tmp_segment,
+            segment_index: vec![HashMap::new()],
         };
 
         db.set("tomato".to_string(), "235".to_string());
@@ -57,11 +87,8 @@ mod tests {
 
         println!("{:?}", db);
 
-        match db.get("apple".to_string()) {
-            Ok(value) => assert_eq!(value, "125"),
-            Err(e) => assert_eq!(e.kind(), ErrorKind::NotFound),
-        }
+        assert_eq!(db.get("tomato".to_string()).unwrap(), "235");
+        assert_eq!(db.get("orange".to_string()).unwrap(), "187");
+        assert_eq!(db.get("apple".to_string()).unwrap(), "125");
     }
 }
-
-fn main() {}
