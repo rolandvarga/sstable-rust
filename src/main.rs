@@ -1,18 +1,20 @@
+use core::time;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
-
-use tempfile;
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::thread;
 
 extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
 
-static VERSION: &str = env!("CARGO_PKG_VERSION");
-static PKG_NAME: &str = env!("CARGO_PKG_NAME");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
-static SEGMENT_TMP_IDX: usize = 0;
-static SEGMENT_SIZE_MAX: usize = 50;
+const SEGMENT_DIR: &str = "./db/";
+const SEGMENT_TMP_IDX: usize = 0;
+const SEGMENT_SIZE_MAX: usize = 50;
 
 #[derive(Debug)]
 struct DB {
@@ -65,6 +67,47 @@ fn main() {
         .init();
 
     info!("running '{}' with version '{}'", PKG_NAME, VERSION);
+
+    let listener = TcpListener::bind("0:7654").expect("unable to bind to socket");
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                // TODO add a thread pool
+                thread::spawn(move || {
+                    handle_request(stream);
+                });
+            }
+            Err(e) => {
+                error!("Error: {}", e);
+            }
+        }
+    }
+}
+
+fn handle_request(mut stream: TcpStream) {
+    info!("connected client: {}", stream.peer_addr().unwrap());
+
+    let mut data = [0; 1024];
+
+    match stream.read(&mut data) {
+        Ok(_) => {
+            let message = String::from_utf8(data.to_vec()).unwrap();
+            info!("received message from client: '{message}'");
+
+            stream.write_all(b"processing request\n").unwrap();
+
+            thread::sleep(time::Duration::from_millis(1000));
+
+            stream.write_all(b"request done\n").unwrap();
+            stream.flush().unwrap(); // todo need?
+
+            stream.shutdown(Shutdown::Both).unwrap();
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+        }
+    }
 }
 
 #[cfg(test)]
